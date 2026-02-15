@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Jazz Chord Analyzer & Improviser</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: white;
+            text-align: center;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #header { padding: 20px; background: #222; box-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+        #chord-display { font-size: 3rem; font-weight: bold; color: #4af; margin: 10px 0; min-height: 4rem; }
+        #scale-display { font-size: 1.2rem; color: #999; margin-bottom: 20px; }
+        #canvas-container { flex-grow: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        canvas { border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.8); max-width: 100%; height: auto; }
+        #controls { padding: 30px; }
+        button {
+            padding: 15px 40px; font-size: 1.2rem; cursor: pointer;
+            background: #4af; border: none; color: white; border-radius: 50px;
+            transition: transform 0.2s, background 0.2s;
+        }
+        button:active { transform: scale(0.95); background: #38d; }
+        .info { font-size: 0.8rem; color: #666; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="header">
+    <h1>Jazz Impro Helper</h1>
+    <div id="chord-display">Bereit...</div>
+    <div id="scale-display">Drücke Start und spiele einen Akkord</div>
+</div>
+
+<div id="canvas-container">
+    <canvas id="pianoCanvas" width="800" height="300"></canvas>
+</div>
+
+<div id="controls">
+    <button id="startBtn">Mikrofon Starten</button>
+    <p class="info">Optimiert für iPad Safari | Erkennt Dur, Moll & 7er Akkorde</p>
+</div>
+
+<script>
+    const canvas = document.getElementById('pianoCanvas');
+    const ctx = canvas.getContext('2d');
+    const chordDiv = document.getElementById('chord-display');
+    const scaleDiv = document.getElementById('scale-display');
+    const startBtn = document.getElementById('startBtn');
+
+    let audioContext;
+    let analyser;
+    let microphone;
+    let isRunning = false;
+
+    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    
+    // Akkord-Templates (12-Bit Muster)
+    const TEMPLATES = {
+        ' Major': [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0],
+        ' Minor': [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0],
+        ' 7th':   [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]
+    };
+
+    // Jazz-Skalen Mapping (Intervalle)
+    const SCALES = {
+        ' Major': { name: 'Lydisch / Ionisch', intervals: [0, 2, 4, 6, 7, 9, 11] },
+        ' Minor': { name: 'Dorisch (Jazz Minor)', intervals: [0, 2, 3, 5, 7, 9, 10] },
+        ' 7th':   { name: 'Mixolydisch (Blues/Jazz)', intervals: [0, 2, 4, 5, 7, 9, 10] }
+    };
+
+    startBtn.onclick = async () => {
+        if (isRunning) return;
+        
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        microphone = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 8192;
+        microphone.connect(analyser);
+        
+        isRunning = true;
+        startBtn.style.display = 'none';
+        loop();
+    };
+
+    function loop() {
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Float32Array(bufferLength);
+        analyser.getFloatFrequencyData(dataArray);
+
+        // 1. Chroma-Vektor berechnen (Energie pro Halton)
+        let chroma = new Array(12).fill(0);
+        const sampleRate = audioContext.sampleRate;
+
+        for (let i = 0; i < bufferLength; i++) {
+            const freq = i * sampleRate / (analyser.fftSize);
+            if (freq > 50 && freq < 2000) { // Relevanter Bereich für Klavier
+                const midi = 12 * Math.log2(freq / 440) + 69;
+                const noteIndex = Math.round(midi) % 12;
+                const amplitude = Math.max(0, dataArray[i] + 100); // Normalisierung
+                chroma[noteIndex] += amplitude;
+            }
+        }
+
+        // 2. Besten Akkord finden
+        let bestMatch = { name: '...', score: 0, root: 0, type: '' };
+        
+        for (let root = 0; root < 12; root++) {
+            for (let type in TEMPLATES) {
+                let score = 0;
+                for (let i = 0; i < 12; i++) {
+                    if (TEMPLATES[type][i] === 1) {
+                        score += chroma[(root + i) % 12];
+                    }
+                }
+                if (score > bestMatch.score) {
+                    bestMatch = { name: NOTE_NAMES[root] + type, score: score, root: root, type: type };
+                }
+            }
+        }
+
+        // Nur anzeigen, wenn genug Signal da ist
+        if (bestMatch.score > 150) {
+            chordDiv.innerText = bestMatch.name;
+            const scaleInfo = SCALES[bestMatch.type];
+            scaleDiv.innerText = "Empfohlene Skala: " + scaleInfo.name;
+            
+            const activeNotes = scaleInfo.intervals.map(i => (bestMatch.root + i) % 12);
+            drawPiano(activeNotes);
+        } else {
+            drawPiano([]);
+        }
+
+        requestAnimationFrame(loop);
+    }
+
+    function drawPiano(highlightIndices) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const whiteKeys = [0, 2, 4, 5, 7, 9, 11];
+        const keyWidth = canvas.width / 14; // 2 Oktaven
+        
+        // Weiße Tasten
+        for (let i = 0; i < 14; i++) {
+            const noteIdx = whiteKeys[i % 7];
+            const realIdx = (noteIdx) % 12;
+            
+            ctx.fillStyle = highlightIndices.includes(realIdx) ? '#4af' : 'white';
+            ctx.strokeStyle = '#333';
+            ctx.fillRect(i * keyWidth, 0, keyWidth, canvas.height);
+            ctx.strokeRect(i * keyWidth, 0, keyWidth, canvas.height);
+        }
+
+        // Schwarze Tasten
+        const blackKeys = [1, 3, 6, 8, 10];
+        for (let i = 0; i < 14; i++) {
+            const currentWhiteNote = whiteKeys[i % 7];
+            if ([0, 1, 3, 4, 5].includes(i % 7)) {
+                const blackNoteIdx = (currentWhiteNote + 1) % 12;
+                ctx.fillStyle = highlightIndices.includes(blackNoteIdx) ? '#0055aa' : 'black';
+                ctx.fillRect((i * keyWidth) + (keyWidth * 0.7), 0, keyWidth * 0.6, canvas.height * 0.6);
+            }
+        }
+    }
+
+    // Initiales leeres Piano
+    drawPiano([]);
+</script>
+</body>
+</html>
